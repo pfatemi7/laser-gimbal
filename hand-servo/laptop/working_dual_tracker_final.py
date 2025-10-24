@@ -154,14 +154,14 @@ def main():
     print("Show your hand to the camera!")
     print("Press 'q' to quit")
     
-    # Improved PID parameters for better accuracy
-    pan_kp = 0.12  # Higher sensitivity for horizontal centering
-    tilt_kp = 0.08  # Keep vertical sensitivity as is
-    pan_deadband = 4   # Very small deadband for precise horizontal tracking
-    tilt_deadband = 8  # Keep vertical deadband larger
+    # FAST but SMOOTH PID parameters
+    pan_kp = 0.20  #
+    tilt_kp = 0.20  # 
+    pan_deadband = 3   # 
+    tilt_deadband = 4  # 
     
-    # Smoothing parameters
-    smoothing_factor = 0.7  # Higher = more smoothing
+    # Light smoothing for stability
+    smoothing_factor = 0.4  # Some smoothing to reduce jitter
     
     pan_pos = 2048
     tilt_pos = 2048
@@ -225,7 +225,7 @@ def main():
                     new_pan_pos = max(0, min(4095, pan_pos - pan_delta))
                     # Apply smoothing
                     pan_pos = int(pan_pos * smoothing_factor + new_pan_pos * (1 - smoothing_factor))
-                    servo.write_pos(pan_servo, pan_pos, 120, 60)  # Slower, more precise movement
+                    servo.write_pos(pan_servo, pan_pos, 1023, 80)  # Fast but smooth
                     print(f"  Pan: {pan_pos} (error: {x_error}, dist_factor: {distance_factor:.2f})")
                 
                 if abs(y_error) > tilt_deadband and tilt_servo:  # Tilt (vertical)
@@ -235,7 +235,7 @@ def main():
                     new_tilt_pos = max(0, min(4095, tilt_pos + tilt_delta))
                     # Apply smoothing
                     tilt_pos = int(tilt_pos * smoothing_factor + new_tilt_pos * (1 - smoothing_factor))
-                    servo.write_pos(tilt_servo, tilt_pos, 150, 80)  # Keep vertical movement as is
+                    servo.write_pos(tilt_servo, tilt_pos, 1023, 80)  # Fast but smooth
                     print(f"  Tilt: {tilt_pos} (error: {y_error}, dist_factor: {distance_factor:.2f})")
                 
                 # Draw hand landmarks
