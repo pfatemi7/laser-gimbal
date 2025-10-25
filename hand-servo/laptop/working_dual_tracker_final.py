@@ -8,6 +8,7 @@ import mediapipe as mp
 import serial
 import time
 import struct
+import math
 
 class STServo:
     def __init__(self, port='/dev/ttyACM1', baudrate=1000000):
@@ -112,7 +113,7 @@ def main():
     # Setup camera
     cap = cv2.VideoCapture(2)
     if not cap.isOpened():
-        print("❌ Camera failed!")
+        print("Camera failed!")
         return
     print("✅ Camera ready")
     
@@ -122,12 +123,12 @@ def main():
     for servo_id in range(1, 6):
         if servo.ping(servo_id):
             available_servos.append(servo_id)
-            print(f"✅ Servo ID {servo_id} found")
+            print(f" Servo ID {servo_id} found")
         else:
-            print(f"❌ Servo ID {servo_id} not found")
+            print(f" Servo ID {servo_id} not found")
     
     if not available_servos:
-        print("❌ No servos found!")
+        print(" No servos found!")
         return
     
     # Setup servos
@@ -141,7 +142,7 @@ def main():
         servo.write_pos(servo_id, 2048, 200, 1000)  # Center
         time.sleep(0.5)
     
-    print("✅ Servos ready!")
+    print(" Servos ready!")
     
     # Assign servos
     pan_servo = available_servos[0] if len(available_servos) > 0 else None
@@ -166,6 +167,17 @@ def main():
     pan_pos = 2048
     tilt_pos = 2048
     
+    # Search mode variables
+    search_mode = False
+    search_direction = 1  # 1 for right, -1 for left
+    search_speed = 50  # Speed for search movement
+    search_center_tilt = 1800  # Look slightly above center
+    search_range = 1000  # How far to scan left/right from center
+    search_start_time = 0
+    last_hand_detected = 0
+    last_search_move = 0  # Time of last search movement
+    transition_from_search = False  # Flag to prevent jumping during transition
+    
     frame_count = 0
     
     while True:
@@ -188,7 +200,15 @@ def main():
         results = hands.process(rgb_frame)
         
         if results.multi_hand_landmarks:
-            print(f"✅ Frame {frame_count}: Hand detected!")
+            print(f" Frame {frame_count}: Hand detected!")
+            if search_mode:
+                print("🔍 Exiting search mode - following hand immediately")
+                search_mode = False  # Exit search mode
+                transition_from_search = True  # Set flag to prevent jumping
+                # Only reset pan to center, keep current tilt position
+                pan_pos = 2048
+                # Don't reset tilt_pos - keep current position to maintain view of hand
+            last_hand_detected = time.time()
             
             for hand_landmarks in results.multi_hand_landmarks:
                 # Track wrist position directly
@@ -215,39 +235,91 @@ def main():
                 cv2.circle(frame, (wrist_x, wrist_y), 15, (255, 255, 255), 2)
                 
                 # Update servo positions with distance compensation and smoothing
-                if abs(x_error) > pan_deadband and pan_servo:  # Pan (horizontal) - more precise
-                    # Apply distance compensation to PID gain
-                    adjusted_pan_kp = pan_kp * distance_factor
-                    # Add extra precision for small horizontal errors
-                    if abs(x_error) < 20:  # Fine adjustment for small errors
-                        adjusted_pan_kp *= 1.5
-                    pan_delta = int(x_error * adjusted_pan_kp)
-                    new_pan_pos = max(0, min(4095, pan_pos - pan_delta))
-                    # Apply smoothing
-                    pan_pos = int(pan_pos * smoothing_factor + new_pan_pos * (1 - smoothing_factor))
-                    servo.write_pos(pan_servo, pan_pos, 1023, 80)  # Fast but smooth
-                    print(f"  Pan: {pan_pos} (error: {x_error}, dist_factor: {distance_factor:.2f})")
-                
-                if abs(y_error) > tilt_deadband and tilt_servo:  # Tilt (vertical)
-                    # Apply distance compensation to PID gain
-                    adjusted_tilt_kp = tilt_kp * distance_factor
-                    tilt_delta = int(y_error * adjusted_tilt_kp)
-                    new_tilt_pos = max(0, min(4095, tilt_pos + tilt_delta))
-                    # Apply smoothing
-                    tilt_pos = int(tilt_pos * smoothing_factor + new_tilt_pos * (1 - smoothing_factor))
-                    servo.write_pos(tilt_servo, tilt_pos, 1023, 80)  # Fast but smooth
-                    print(f"  Tilt: {tilt_pos} (error: {y_error}, dist_factor: {distance_factor:.2f})")
+                if not transition_from_search:  # Only move servos if not in transition
+                    if abs(x_error) > pan_deadband and pan_servo:  # Pan (horizontal) - more precise
+                        # Apply distance compensation to PID gain
+                        adjusted_pan_kp = pan_kp * distance_factor
+                        # Add extra precision for small horizontal errors
+                        if abs(x_error) < 20:  # Fine adjustment for small errors
+                            adjusted_pan_kp *= 1.5
+                        pan_delta = int(x_error * adjusted_pan_kp)
+                        new_pan_pos = max(0, min(4095, pan_pos - pan_delta))
+                        # Apply smoothing
+                        pan_pos = int(pan_pos * smoothing_factor + new_pan_pos * (1 - smoothing_factor))
+                        servo.write_pos(pan_servo, pan_pos, 1023, 80)  # Fast but smooth
+                        print(f"  Pan: {pan_pos} (error: {x_error}, dist_factor: {distance_factor:.2f})")
+                    
+                    if abs(y_error) > tilt_deadband and tilt_servo:  # Tilt (vertical)
+                        # Apply distance compensation to PID gain
+                        adjusted_tilt_kp = tilt_kp * distance_factor
+                        tilt_delta = int(y_error * adjusted_tilt_kp)
+                        new_tilt_pos = max(0, min(4095, tilt_pos + tilt_delta))
+                        # Apply smoothing
+                        tilt_pos = int(tilt_pos * smoothing_factor + new_tilt_pos * (1 - smoothing_factor))
+                        servo.write_pos(tilt_servo, tilt_pos, 1023, 80)  # Fast but smooth
+                        print(f"  Tilt: {tilt_pos} (error: {y_error}, dist_factor: {distance_factor:.2f})")
+                else:
+                    print("🔍 Transition from search - skipping servo movement")
+                    # Reset flag after a few frames to resume normal tracking
+                    if frame_count % 5 == 0:  # Every 5 frames
+                        transition_from_search = False
+                        print("🔍 Resuming normal tracking")
                 
                 # Draw hand landmarks
                 mp.solutions.drawing_utils.draw_landmarks(
                     frame, hand_landmarks, mp_hands.HAND_CONNECTIONS)
         else:
-            if frame_count % 30 == 0:  # Every second
-                print(f"Frame {frame_count}: No hand detected")
+            # No hand detected - check if we should enter search mode
+            current_time = time.time()
+            if current_time - last_hand_detected > 2.0:  # 2 seconds without hand
+                if not search_mode:
+                    search_mode = True
+                    search_start_time = current_time
+                    print(" Entering search mode - scanning for hands...")
+                
+                # Search mode: continuous left-right scanning
+                if search_mode:
+                    current_time = time.time()
+                    
+                    # Set tilt to look slightly above center
+                    if tilt_servo:
+                        servo.write_pos(tilt_servo, search_center_tilt, 200, 500)
+                    
+                    # Create smooth periodic left-right motion
+                    search_center = 2048  # Center position
+                    search_period = 4.0  # 4 seconds for full left-right cycle
+                    
+                    # Calculate position using sine wave for smooth periodic motion
+                    time_in_period = (current_time - search_start_time) % search_period
+                    phase = (time_in_period / search_period) * 2 * 3.14159  # 0 to 2π
+                    search_offset = int(search_range * 0.5 * math.sin(phase))
+                    search_pan = search_center + search_offset
+                    
+                    # Move pan servo in smooth periodic pattern
+                    if pan_servo:
+                        servo.write_pos(pan_servo, search_pan, search_speed, 100)
+                        pan_pos = search_pan  # Update pan_pos to prevent bounce-back
+                    
+                    # Show search progress every 0.5 seconds
+                    if current_time - last_search_move > 0.5:
+                        direction_text = "right" if search_offset > 0 else "left" if search_offset < 0 else "center"
+                        print(f"🔍 Searching: pan={search_pan}, moving {direction_text}")
+                        last_search_move = current_time
+            else:
+                if frame_count % 30 == 0:  # Every second
+                    print(f"Frame {frame_count}: No hand detected (waiting for search mode)")
         
         # Show status
-        status = "HAND DETECTED" if results.multi_hand_landmarks else "NO HAND"
-        color = (0, 255, 0) if results.multi_hand_landmarks else (0, 0, 255)
+        if results.multi_hand_landmarks:
+            status = "HAND DETECTED"
+            color = (0, 255, 0)
+        elif search_mode:
+            status = "SEARCH MODE"
+            color = (255, 255, 0)  # Yellow for search mode
+        else:
+            status = "NO HAND"
+            color = (0, 0, 255)
+        
         cv2.putText(frame, status, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
         cv2.putText(frame, f"Frame: {frame_count}", (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
         cv2.putText(frame, f"Pan: {pan_pos}", (10, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
@@ -269,7 +341,7 @@ def main():
     cap.release()
     cv2.destroyAllWindows()
     servo.disconnect()
-    print("✅ Tracking stopped")
+    print(" Tracking stopped")
 
 if __name__ == "__main__":
     main()
